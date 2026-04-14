@@ -28,7 +28,7 @@ float f_ax = 0, f_ay = 0, f_az = 0, f_gx = 0, f_gy = 0, f_gz = 0;
 float f_roll = 0, f_pitch = 0, f_yaw = 0, f_alt = 0;
 bool first_loop = true;
 
-// ================= CALIBRATION =================
+
 void calibrateMPU() {
   int samples = 1000;
   float ax_sum = 0, ay_sum = 0, az_sum = 0;
@@ -50,7 +50,7 @@ void calibrateMPU() {
   gz_offset = gz_sum / samples;
 }
 
-// ================= SETUP =================
+
 void setup() {
   Serial.begin(115200);
   Wire.begin();
@@ -83,7 +83,7 @@ void setup() {
   lastUpdate = micros();
 }
 
-// ================= READ MPU =================
+
 void readMPU() {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x3B);
@@ -115,7 +115,7 @@ void readMPU() {
   gz -= gz_offset;
 }
 
-// ================= MADGWICK 6-DOF =================
+
 void madgwickUpdate() {
   unsigned long now = micros();
   float dt = (now - lastUpdate) / 1000000.0f;
@@ -182,7 +182,6 @@ void madgwickUpdate() {
   q0 *= recipNorm; q1 *= recipNorm; q2 *= recipNorm; q3 *= recipNorm;
 }
 
-// ================= LOOP =================
 void loop() {
   readMPU();
 
@@ -222,7 +221,7 @@ void loop() {
     f_alt   = (ema_out * alt)   + ((1.0 - ema_out) * f_alt);
   }
 
-  // ===== GRAPH OUTPUT =====
+  
   Serial.print(f_roll); Serial.print(",");
   Serial.print(f_pitch); Serial.print(",");
   Serial.print(f_yaw); Serial.print(",");
