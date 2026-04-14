@@ -55,12 +55,11 @@ void loop() {
   gz = gz_raw / 131.0;
 
 
-  // Calculate Delta Time
   unsigned long currentTime = micros();
   float dt = (currentTime - lastTime) / 1000000.0;
   lastTime = currentTime;
 
-  // Accelerometer Angles
+
   float accRoll = atan2(ay, az) * 180 / PI;
   float accPitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180 / PI;
 
