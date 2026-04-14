@@ -1,0 +1,232 @@
+#include <Wire.h>
+#include <Adafruit_BMP280.h>
+
+#define MPU_ADDR 0x68
+
+Adafruit_BMP280 bmp;
+
+// OFFSETS
+float ax_offset = 0, ay_offset = 0, az_offset = 0;
+float gx_offset = 0, gy_offset = 0, gz_offset = 0;
+
+// RAW
+float ax, ay, az;
+float gx, gy, gz;
+
+// MADGWICK (6-DOF)
+float q0 = 1, q1 = 0, q2 = 0, q3 = 0;
+float beta = 0.04; 
+unsigned long lastUpdate = 0;
+
+// ALT BASE
+float baseAlt = 0;
+
+// SMOOTHING (EMA Filters)
+float ema_in = 0.2;  // Filter weight for raw MPU inputs
+float ema_out = 0.2; // Filter weight for final angles/altitude output
+float f_ax = 0, f_ay = 0, f_az = 0, f_gx = 0, f_gy = 0, f_gz = 0;
+float f_roll = 0, f_pitch = 0, f_yaw = 0, f_alt = 0;
+bool first_loop = true;
+
+// ================= CALIBRATION =================
+void calibrateMPU() {
+  int samples = 1000;
+  float ax_sum = 0, ay_sum = 0, az_sum = 0;
+  float gx_sum = 0, gy_sum = 0, gz_sum = 0;
+
+  for (int i = 0; i < samples; i++) {
+    readMPU();
+    ax_sum += ax; ay_sum += ay; az_sum += az;
+    gx_sum += gx; gy_sum += gy; gz_sum += gz;
+    delay(3);
+  }
+
+  ax_offset = ax_sum / samples;
+  ay_offset = ay_sum / samples;
+  az_offset = (az_sum / samples) - 1.0;
+
+  gx_offset = gx_sum / samples;
+  gy_offset = gy_sum / samples;
+  gz_offset = gz_sum / samples;
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  // MPU Wake Up
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission();
+
+  // Enable Digital Low Pass Filter (DLPF) ~20Hz
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x1A);
+  Wire.write(0x04); 
+  Wire.endTransmission();
+
+  // BMP
+  if (!bmp.begin(0x76)) {
+    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
+    while (1);
+  }
+
+  Serial.println("Calibrating MPU... Keep it perfectly still.");
+  delay(1000);
+  calibrateMPU();
+  Serial.println("MPU Calibrated. Ready.");
+
+  baseAlt = bmp.readAltitude(1013.25); // set ground = 0
+
+  lastUpdate = micros();
+}
+
+// ================= READ MPU =================
+void readMPU() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 14, true);
+
+  int16_t ax_raw = Wire.read() << 8 | Wire.read();
+  int16_t ay_raw = Wire.read() << 8 | Wire.read();
+  int16_t az_raw = Wire.read() << 8 | Wire.read();
+  Wire.read(); Wire.read(); // Skip temperature
+  int16_t gx_raw = Wire.read() << 8 | Wire.read();
+  int16_t gy_raw = Wire.read() << 8 | Wire.read();
+  int16_t gz_raw = Wire.read() << 8 | Wire.read();
+
+  ax = ax_raw / 16384.0;
+  ay = ay_raw / 16384.0;
+  az = az_raw / 16384.0;
+
+  gx = gx_raw / 131.0;
+  gy = gy_raw / 131.0;
+  gz = gz_raw / 131.0;
+
+  ax -= ax_offset;
+  ay -= ay_offset;
+  az -= az_offset;
+
+  gx -= gx_offset;
+  gy -= gy_offset;
+  gz -= gz_offset;
+}
+
+// ================= MADGWICK 6-DOF =================
+void madgwickUpdate() {
+  unsigned long now = micros();
+  float dt = (now - lastUpdate) / 1000000.0f;
+  lastUpdate = now;
+
+  float recipNorm;
+  float s0, s1, s2, s3;
+  float qDot1, qDot2, qDot3, qDot4;
+  float _2q0, _2q1, _2q2, _2q3, _4q0, _4q1, _4q2, _8q1, _8q2, q0q0, q1q1, q2q2, q3q3;
+
+  float gx_rad = gx * 0.0174533f;
+  float gy_rad = gy * 0.0174533f;
+  float gz_rad = gz * 0.0174533f;
+
+  qDot1 = 0.5f * (-q1 * gx_rad - q2 * gy_rad - q3 * gz_rad);
+  qDot2 = 0.5f * (q0 * gx_rad + q2 * gz_rad - q3 * gy_rad);
+  qDot3 = 0.5f * (q0 * gy_rad - q1 * gz_rad + q3 * gx_rad);
+  qDot4 = 0.5f * (q0 * gz_rad + q1 * gy_rad - q2 * gx_rad);
+     
+ // Compute feedback only if accelerometer measurement valid (avoids NaN in divisions)
+  if (!((ax == 0.0f) && (ay == 0.0f) && (az == 0.0f))) {
+
+      // Normalise accelerometer measurement
+    recipNorm = 1.0f / sqrt(ax * ax + ay * ay + az * az);
+    float ax_n = ax * recipNorm;
+    float ay_n = ay * recipNorm;
+    float az_n = az * recipNorm;
+
+    // Auxiliary variables to avoid repeated arithmetic
+
+    _2q0 = 2.0f * q0; _2q1 = 2.0f * q1; _2q2 = 2.0f * q2; _2q3 = 2.0f * q3;
+    _4q0 = 4.0f * q0; _4q1 = 4.0f * q1; _4q2 = 4.0f * q2;
+    _8q1 = 8.0f * q1; _8q2 = 8.0f * q2;
+    q0q0 = q0 * q0; q1q1 = q1 * q1; q2q2 = q2 * q2; q3q3 = q3 * q3;
+
+    // Gradient decent algorithm corrective step
+
+    s0 = _4q0 * q2q2 + _2q2 * ax_n + _4q0 * q1q1 - _2q1 * ay_n;
+    s1 = _4q1 * q3q3 - _2q3 * ax_n + 4.0f * q0q0 * q1 - _2q0 * ay_n - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az_n;
+    s2 = 4.0f * q0q0 * q2 + _2q0 * ax_n + _4q2 * q3q3 - _2q3 * ay_n - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az_n;
+    s3 = 4.0f * q1q1 * q3 - _2q1 * ax_n + 4.0f * q2q2 * q3 - _2q2 * ay_n;
+
+    // normalise step magnitude
+
+    recipNorm = 1.0f / sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3);
+    s0 *= recipNorm; s1 *= recipNorm; s2 *= recipNorm; s3 *= recipNorm;
+
+     // Apply feedback step
+
+    qDot1 -= beta * s0;
+    qDot2 -= beta * s1;
+    qDot3 -= beta * s2;
+    qDot4 -= beta * s3;
+  }
+
+  q0 += qDot1 * dt;
+  q1 += qDot2 * dt;
+  q2 += qDot3 * dt;
+  q3 += qDot4 * dt;
+
+    // Normalise quaternion
+
+  recipNorm = 1.0f / sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+  q0 *= recipNorm; q1 *= recipNorm; q2 *= recipNorm; q3 *= recipNorm;
+}
+
+// ================= LOOP =================
+void loop() {
+  readMPU();
+
+  // 1. FILTER INPUTS BEFORE MADGWICK
+  if (first_loop) {
+    f_ax = ax; f_ay = ay; f_az = az;
+    f_gx = gx; f_gy = gy; f_gz = gz;
+  } else {
+    f_ax = (ema_in * ax) + ((1.0 - ema_in) * f_ax);
+    f_ay = (ema_in * ay) + ((1.0 - ema_in) * f_ay);
+    f_az = (ema_in * az) + ((1.0 - ema_in) * f_az);
+    f_gx = (ema_in * gx) + ((1.0 - ema_in) * f_gx);
+    f_gy = (ema_in * gy) + ((1.0 - ema_in) * f_gy);
+    f_gz = (ema_in * gz) + ((1.0 - ema_in) * f_gz);
+  }
+
+  // Feed smoothed data into Madgwick
+  ax = f_ax; ay = f_ay; az = f_az;
+  gx = f_gx; gy = f_gy; gz = f_gz;
+
+  madgwickUpdate();
+
+  float roll  = atan2(2 * (q0 * q1 + q2 * q3), 1 - 2 * (q1 * q1 + q2 * q2)) * 57.3;
+  float pitch = asin(2 * (q0 * q2 - q3 * q1)) * 57.3;
+  float yaw   = atan2(2 * (q0 * q3 + q1 * q2), 1 - 2 * (q2 * q2 + q3 * q3)) * 57.3;
+
+  float alt = bmp.readAltitude(1013.25) - baseAlt;
+
+  // 2. FILTER OUTPUTS BEFORE PRINTING
+  if (first_loop) {
+    f_roll = roll; f_pitch = pitch; f_yaw = yaw; f_alt = alt;
+    first_loop = false;
+  } else {
+    f_roll  = (ema_out * roll)  + ((1.0 - ema_out) * f_roll);
+    f_pitch = (ema_out * pitch) + ((1.0 - ema_out) * f_pitch);
+    f_yaw   = (ema_out * yaw)   + ((1.0 - ema_out) * f_yaw);
+    f_alt   = (ema_out * alt)   + ((1.0 - ema_out) * f_alt);
+  }
+
+  // ===== GRAPH OUTPUT =====
+  Serial.print(f_roll); Serial.print(",");
+  Serial.print(f_pitch); Serial.print(",");
+  Serial.print(f_yaw); Serial.print(",");
+  Serial.println(f_alt);
+
+  delay(10);
+}
