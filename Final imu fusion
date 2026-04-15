@@ -22,8 +22,8 @@ unsigned long lastUpdate = 0;
 float baseAlt = 0;
 
 // SMOOTHING (EMA Filters)
-float ema_in = 0.2;  // Filter weight for raw MPU inputs
-float ema_out = 0.2; // Filter weight for final angles/altitude output
+float ema_in = 0.1;  // Filter weight for raw MPU inputs
+float ema_out = 0.05; // Filter weight for final angles/altitude output
 float f_ax = 0, f_ay = 0, f_az = 0, f_gx = 0, f_gy = 0, f_gz = 0;
 float f_roll = 0, f_pitch = 0, f_yaw = 0, f_alt = 0;
 bool first_loop = true;
@@ -227,5 +227,4 @@ void loop() {
   Serial.print(f_yaw); Serial.print(",");
   Serial.println(f_alt);
 
-  delay(10);
 }
